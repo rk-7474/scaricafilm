@@ -120,7 +120,7 @@
                         <div class="form-group">
                             <label for="downloadDir">Cartella Media Download</label>
                             <input type="text" id="downloadDir" required value="{{ settings.download_dir }}">
-                            <small class="form-help">Percorso sul server in cui organizzare e salvare i file (es. <code>/media</code> o <code>./downloads</code>).</small>
+                            <small class="form-help">Percorso nel server/container in cui salvare i file (predefinito in Docker: <code>/media</code>). Per salvare direttamente in cartelle esterne (es. Jellyfin o Plex), mappa il volume in <code>docker-compose.yml</code> (es. <code>- ../jellyfin/media:/media</code>).</small>
                         </div>
 
                         <div class="form-row">

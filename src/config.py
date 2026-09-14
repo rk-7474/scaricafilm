@@ -27,6 +27,15 @@ class SettingsManager:
                     self.settings.update(loaded)
             else:
                 self.save()
+
+            # Ensure valid download_dir inside Docker
+            env_media = os.environ.get("MEDIA_FOLDER")
+            if env_media:
+                current_dir = self.settings.get("download_dir", "")
+                # If running inside Docker and dir is a host-specific path or doesn't exist
+                if not current_dir or current_dir.startswith("/home/") or not os.path.exists(current_dir):
+                    self.settings["download_dir"] = env_media
+                    self.save()
         except Exception as e:
             print(f"[Config] Error loading settings: {e}")
 
@@ -50,8 +59,34 @@ class SettingsManager:
         # Ensure url does not have trailing slash
         if "streamingcommunity_url" in self.settings:
             self.settings["streamingcommunity_url"] = self.settings["streamingcommunity_url"].rstrip("/")
+
+        # If running inside Docker, validate download_dir
+        env_media = os.environ.get("MEDIA_FOLDER")
+        if env_media:
+            dl = self.settings.get("download_dir", "")
+            if not dl or dl.startswith("/home/") or not os.path.exists(dl):
+                self.settings["download_dir"] = env_media
+
         self.save()
         return self.settings
+
+    def get_media_dir(self) -> Path:
+        env_media = os.environ.get("MEDIA_FOLDER")
+        dl = self.settings.get("download_dir", "")
+        if env_media:
+            if not dl or dl.startswith("/home/") or not os.path.exists(dl):
+                p = Path(env_media)
+            else:
+                p = Path(dl)
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+
+        if not dl:
+            p = Path(os.path.abspath("downloads"))
+        else:
+            p = Path(dl)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
 
     def all(self):
         return dict(self.settings)

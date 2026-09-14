@@ -257,7 +257,7 @@ class DownloadManager:
         self.save_history()
 
         ffmpeg_bin = find_ffmpeg()
-        media_root = Path(settings_manager.get("download_dir", os.path.abspath("downloads")))
+        media_root = settings_manager.get_media_dir()
 
         try:
             # 1. Resolve stream sources
@@ -329,7 +329,12 @@ class DownloadManager:
                 final_path = movie_dir / filename
 
             final_path.parent.mkdir(parents=True, exist_ok=True)
-            part_path = final_path.with_suffix(".mp4.part")
+            try:
+                os.chmod(final_path.parent, 0o777)
+            except Exception:
+                pass
+
+            part_path = final_path.parent / f".{final_path.stem}.part.mp4"
             task._part_file = part_path
             task.file_path = str(final_path)
 
@@ -349,6 +354,7 @@ class DownloadManager:
                 "-metadata", f"title={task.get_display_title()}",
                 "-progress", "pipe:1",
                 "-nostats",
+                "-f", "mp4",
                 str(part_path)
             ]
 
@@ -413,6 +419,10 @@ class DownloadManager:
                     if final_path.exists():
                         final_path.unlink()
                     part_path.rename(final_path)
+                    try:
+                        os.chmod(final_path, 0o666)
+                    except Exception:
+                        pass
                     task.downloaded_size = format_bytes(final_path.stat().st_size)
 
                 task.status = "completed"
