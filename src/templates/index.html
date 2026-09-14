@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ScaricaFilm - StreamingCommunity Downloader</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-layout">
+        <!-- Top Navbar -->
+        <header class="navbar">
+            <div class="nav-brand">
+                <span class="logo-icon">🎬</span>
+                <span class="logo-text">Scarica<strong>Film</strong></span>
+                <span class="badge-status online" id="connectionBadge" title="Server online">Online</span>
+            </div>
+            <nav class="nav-links">
+                <button class="nav-btn active" data-tab="searchTab">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                    Cerca
+                </button>
+                <button class="nav-btn" data-tab="downloadsTab">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                    Download
+                    <span class="counter-badge" id="activeDownloadsCount" style="display: none;">0</span>
+                </button>
+                <button class="nav-btn" data-tab="settingsTab">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                    Impostazioni
+                </button>
+            </nav>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- TAB: SEARCH -->
+            <section id="searchTab" class="tab-pane active">
+                <div class="search-hero">
+                    <h1>Cosa vuoi guardare?</h1>
+                    <p>Cerca film e serie TV direttamente da StreamingCommunity e scaricali nella tua libreria.</p>
+                    <div class="search-box">
+                        <svg class="search-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                        <input type="text" id="searchInput" placeholder="Inserisci titolo film o serie TV (es. Inception, Batman, Fallout)..." autocomplete="off">
+                        <button id="searchSubmitBtn" class="primary-btn">Cerca</button>
+                    </div>
+                    <div class="filter-pills" id="typeFilters">
+                        <button class="pill active" data-filter="all">Tutti</button>
+                        <button class="pill" data-filter="movie">Film</button>
+                        <button class="pill" data-filter="tv">Serie TV</button>
+                    </div>
+                </div>
+
+                <div id="searchSpinner" class="spinner-container" style="display: none;">
+                    <div class="spinner"></div>
+                    <p>Ricerca in corso su StreamingCommunity...</p>
+                </div>
+
+                <div id="searchResults" class="titles-grid">
+                    <!-- Dynamic movie cards injected here -->
+                </div>
+
+                <div id="noResults" class="empty-state" style="display: none;">
+                    <span class="empty-icon">🔍</span>
+                    <h3>Nessun titolo trovato</h3>
+                    <p>Prova con un termine di ricerca diverso o controlla l'URL di StreamingCommunity nelle impostazioni.</p>
+                </div>
+            </section>
+
+            <!-- TAB: DOWNLOADS -->
+            <section id="downloadsTab" class="tab-pane">
+                <div class="section-header">
+                    <h2>Gestione Download</h2>
+                    <p>Monitora lo stato di avanzamento e i file scaricati nella cartella multimediale.</p>
+                </div>
+
+                <div id="activeDownloadsContainer">
+                    <div class="subsection-title">In Corso & In Coda</div>
+                    <div id="activeDownloadsList" class="downloads-list">
+                        <!-- Active items -->
+                    </div>
+                </div>
+
+                <div id="completedDownloadsContainer" style="margin-top: 2rem;">
+                    <div class="subsection-title">Completati & Cronologia</div>
+                    <div id="completedDownloadsList" class="downloads-list">
+                        <!-- Completed items -->
+                    </div>
+                </div>
+
+                <div id="noDownloads" class="empty-state" style="display: none;">
+                    <span class="empty-icon">📥</span>
+                    <h3>Nessun download attivo</h3>
+                    <p>Vai alla scheda di ricerca per aggiungere nuovi film o episodi.</p>
+                </div>
+            </section>
+
+            <!-- TAB: SETTINGS -->
+            <section id="settingsTab" class="tab-pane">
+                <div class="section-header">
+                    <h2>Impostazioni</h2>
+                    <p>Configura l'indirizzo del sito di streaming, la cartella di destinazione e le preferenze di qualità.</p>
+                </div>
+
+                <div class="settings-card">
+                    <form id="settingsForm">
+                        <div class="form-group">
+                            <label for="streamingUrl">URL StreamingCommunity</label>
+                            <div class="input-with-action">
+                                <input type="url" id="streamingUrl" required value="{{ settings.streamingcommunity_url }}">
+                                <button type="button" id="testUrlBtn" class="secondary-btn">Test Connessione</button>
+                            </div>
+                            <small class="form-help">Aggiorna questo link quando StreamingCommunity cambia dominio o mirror.</small>
+                            <div id="testResult" class="test-status" style="display: none;"></div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="downloadDir">Cartella Media Download</label>
+                            <input type="text" id="downloadDir" required value="{{ settings.download_dir }}">
+                            <small class="form-help">Percorso sul server in cui organizzare e salvare i file (es. <code>/media</code> o <code>./downloads</code>).</small>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group half">
+                                <label for="preferredQuality">Qualità Video Preferita</label>
+                                <select id="preferredQuality">
+                                    <option value="1080p" {% if settings.preferred_quality == '1080p' %}selected{% endif %}>1080p (Full HD)</option>
+                                    <option value="720p" {% if settings.preferred_quality == '720p' %}selected{% endif %}>720p (HD)</option>
+                                    <option value="480p" {% if settings.preferred_quality == '480p' %}selected{% endif %}>480p (SD)</option>
+                                    <option value="best" {% if settings.preferred_quality == 'best' %}selected{% endif %}>Migliore Disponibile</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group half">
+                                <label for="preferredAudio">Lingua Audio Preferita</label>
+                                <select id="preferredAudio">
+                                    <option value="ita" {% if settings.preferred_audio == 'ita' %}selected{% endif %}>Italiano</option>
+                                    <option value="eng" {% if settings.preferred_audio == 'eng' %}selected{% endif %}>Inglese / Originale</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <button type="submit" class="primary-btn">Salva Impostazioni</button>
+                        </div>
+                    </form>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- MODAL: Movie Download Options -->
+    <div id="movieModal" class="modal">
+        <div class="modal-content">
+            <button class="modal-close" onclick="closeModal('movieModal')">&times;</button>
+            <div class="modal-header">
+                <h3 id="movieModalTitle">Scarica Film</h3>
+            </div>
+            <div class="modal-body">
+                <div class="modal-media-info">
+                    <img id="movieModalPoster" src="" alt="Poster" class="modal-poster">
+                    <div class="modal-meta">
+                        <div id="movieModalYear" class="meta-tag"></div>
+                        <div id="movieModalQuality" class="meta-tag"></div>
+                        <p id="movieModalPlot" class="modal-plot"></p>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Seleziona Risoluzione:</label>
+                    <select id="movieQualitySelect">
+                        <option value="1080p">1080p (Full HD)</option>
+                        <option value="720p">720p (HD)</option>
+                        <option value="480p">480p (SD)</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label>Lingua Audio:</label>
+                    <select id="movieAudioSelect">
+                        <option value="ita">Italiano</option>
+                        <option value="eng">Inglese</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="secondary-btn" onclick="closeModal('movieModal')">Annulla</button>
+                <button id="confirmMovieDownloadBtn" class="primary-btn">Avvia Download</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: TV Series Episodes -->
+    <div id="tvModal" class="modal">
+        <div class="modal-content modal-large">
+            <button class="modal-close" onclick="closeModal('tvModal')">&times;</button>
+            <div class="modal-header">
+                <h3 id="tvModalTitle">Episodi Serie</h3>
+            </div>
+            <div class="modal-body">
+                <div class="seasons-bar" id="tvSeasonsBar">
+                    <!-- Season tabs -->
+                </div>
+                <div class="season-actions">
+                    <span id="episodesCountText">0 episodi</span>
+                    <button id="downloadSeasonBtn" class="primary-btn btn-sm">Scarica Tutta la Stagione</button>
+                </div>
+                <div id="tvEpisodesList" class="episodes-list">
+                    <!-- Episodes list -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div id="toastContainer" class="toast-container"></div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
