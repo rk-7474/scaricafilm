@@ -32,8 +32,8 @@ class SettingsManager:
             env_media = os.environ.get("MEDIA_FOLDER")
             if env_media:
                 current_dir = self.settings.get("download_dir", "")
-                # If running inside Docker and dir is a host-specific path or doesn't exist
-                if not current_dir or current_dir.startswith("/home/") or not os.path.exists(current_dir):
+                # If running inside Docker and dir is a relative path (e.g. ./media), a host path or doesn't exist
+                if not current_dir or not Path(current_dir).is_absolute() or current_dir.startswith("/home/") or not os.path.exists(current_dir):
                     self.settings["download_dir"] = env_media
                     self.save()
         except Exception as e:
@@ -64,7 +64,7 @@ class SettingsManager:
         env_media = os.environ.get("MEDIA_FOLDER")
         if env_media:
             dl = self.settings.get("download_dir", "")
-            if not dl or dl.startswith("/home/") or not os.path.exists(dl):
+            if not dl or not Path(dl).is_absolute() or dl.startswith("/home/") or not os.path.exists(dl):
                 self.settings["download_dir"] = env_media
 
         self.save()
@@ -74,7 +74,7 @@ class SettingsManager:
         env_media = os.environ.get("MEDIA_FOLDER")
         dl = self.settings.get("download_dir", "")
         if env_media:
-            if not dl or dl.startswith("/home/") or not os.path.exists(dl):
+            if not dl or not Path(dl).is_absolute() or dl.startswith("/home/") or not os.path.exists(dl):
                 p = Path(env_media)
             else:
                 p = Path(dl)
@@ -84,7 +84,7 @@ class SettingsManager:
         if not dl:
             p = Path(os.path.abspath("downloads"))
         else:
-            p = Path(dl)
+            p = Path(dl).resolve()
         p.mkdir(parents=True, exist_ok=True)
         return p
 
