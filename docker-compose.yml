@@ -9,8 +9,8 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # Cartella in cui verranno salvati i film e le serie scaricate
-      - ./downloads:/media
+      # Cartella in cui verranno salvati i film e le serie scaricate (condivisa con Jellyfin)
+      - ../jellyfin/media:/media
       # Cartella persistente per impostazioni e cronologia download
       - ./config:/app/config
     environment:
