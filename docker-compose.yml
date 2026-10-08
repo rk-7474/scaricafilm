@@ -9,13 +9,16 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # Cartella in cui verranno salvati i film e le serie scaricate (condivisa con Jellyfin)
-      - ../jellyfin/media:/media
+      # Cartella download locale di default del progetto (indipendente da Jellyfin)
+      - ./downloads:/downloads
+      # Mappatura del disco C: di Windows per consentire all'utente di impostare qualsiasi cartella personalizzata (es. C:\Film)
+      - C:/:/host_c
       # Cartella persistente per impostazioni e cronologia download
       - ./config:/app/config
     environment:
       - PORT=8000
       - HOST=0.0.0.0
-      - MEDIA_FOLDER=/media
+      - MOVIES_FOLDER=/downloads/movies
+      - TV_FOLDER=/downloads/tv
       - CONFIG_PATH=/app/config/settings.json
       - TZ=Europe/Rome
