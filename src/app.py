@@ -16,6 +16,13 @@ BASE_DIR = Path(__file__).resolve().parent
 
 app = FastAPI(title="ScaricaFilm WebUI", description="WebUI per scaricare film e serie da StreamingCommunity")
 
+@app.middleware("http")
+async def add_no_cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/static/") or request.url.path == "/":
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return response
+
 # Mount static and templates
 static_dir = BASE_DIR / "static"
 static_dir.mkdir(parents=True, exist_ok=True)
@@ -62,6 +69,8 @@ class DownloadSeasonRequest(BaseModel):
 
 class SettingsUpdateRequest(BaseModel):
     streamingcommunity_url: Optional[str] = None
+    movies_dir: Optional[str] = None
+    tv_dir: Optional[str] = None
     download_dir: Optional[str] = None
     preferred_quality: Optional[str] = None
     preferred_audio: Optional[str] = None
@@ -161,23 +170,41 @@ async def get_downloads():
 
 @app.post("/api/downloads/{task_id}/cancel")
 async def cancel_download(task_id: str):
-    success = download_manager.cancel_task(task_id)
+    success = await download_manager.cancel_task(task_id)
+    return {"ok": success}
+
+@app.post("/api/downloads/{task_id}/retry")
+async def retry_download(task_id: str):
+    success = await download_manager.retry_task(task_id)
     return {"ok": success}
 
 @app.delete("/api/downloads/{task_id}")
 async def delete_download(task_id: str, delete_file: bool = Query(False)):
-    success = download_manager.delete_task(task_id, delete_file=delete_file)
+    success = await download_manager.delete_task(task_id, delete_file=delete_file)
     return {"ok": success}
 
 @app.get("/api/downloads/stream")
-async def stream_downloads():
+async def stream_downloads(request: Request):
     async def event_generator():
-        while True:
-            tasks = download_manager.get_all_tasks()
-            yield f"data: {json.dumps(tasks)}\n\n"
-            await asyncio.sleep(1)
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                tasks = download_manager.get_all_tasks()
+                yield f"data: {json.dumps(tasks)}\n\n"
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            pass
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 # --- Settings ---
 @app.get("/api/settings")

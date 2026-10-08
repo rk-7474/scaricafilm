@@ -15,22 +15,37 @@ DEFAULT_HEADERS = {
 class StreamingCommunityScraper:
     def __init__(self, session: Optional[requests.Session] = None):
         self.session = session or requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=2)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
         self.session.headers.update(DEFAULT_HEADERS)
 
     def _get_base_url(self, base_url: Optional[str] = None) -> str:
-        url = base_url or settings_manager.get("streamingcommunity_url", "https://streamingcommunityz.taxi")
+        url = base_url or settings_manager.get("streamingcommunity_url", "https://streamingcommunityz.rip")
         return url.rstrip("/")
 
     def test_connection(self, base_url: Optional[str] = None) -> Dict[str, Any]:
         target_url = self._get_base_url(base_url)
         try:
-            r = self.session.get(target_url, timeout=8, allow_redirects=True)
+            r = self.session.get(target_url, timeout=10, allow_redirects=True)
             if r.status_code == 200:
+                final_url = r.url.rstrip("/")
+                soup = BeautifulSoup(r.text, "html.parser")
+                app = soup.find(id="app")
+                has_inertia = bool(app and app.get("data-page"))
+                if not has_inertia:
+                    return {
+                        "ok": False,
+                        "status_code": r.status_code,
+                        "url": final_url,
+                        "message": f"Il sito risponde ma non è un portale StreamingCommunity compatibile (manca la struttura Inertia/API). Verifica che non sia un clone non supportato."
+                    }
+                redirect_msg = f" (reindirizzato a {final_url})" if final_url != target_url else ""
                 return {
                     "ok": True,
                     "status_code": r.status_code,
-                    "url": r.url,
-                    "message": f"Connessione riuscita a {r.url}"
+                    "url": final_url,
+                    "message": f"Connessione riuscita a {final_url}{redirect_msg}"
                 }
             return {
                 "ok": False,
@@ -62,7 +77,7 @@ class StreamingCommunityScraper:
 
         data = json.loads(app["data-page"])
         props = data.get("props", {})
-        cdn_url = props.get("cdn_url", "https://cdn.streamingcommunityz.taxi").rstrip("/")
+        cdn_url = props.get("cdn_url", "https://cdn.streamingcommunityz.rip").rstrip("/")
         raw_titles = props.get("titles", [])
 
         results = []
@@ -112,7 +127,7 @@ class StreamingCommunityScraper:
         data = json.loads(app["data-page"])
         props = data.get("props", {})
         title_data = props.get("title", {})
-        cdn_url = props.get("cdn_url", "https://cdn.streamingcommunityz.taxi").rstrip("/")
+        cdn_url = props.get("cdn_url", "https://cdn.streamingcommunityz.rip").rstrip("/")
 
         # Parse poster
         images = title_data.get("images", [])
@@ -223,14 +238,37 @@ class StreamingCommunityScraper:
         expires = expires_match.group(1)
         master_base_url = url_match.group(1)
 
-        # 3. Master playlist URL
-        master_playlist_url = f"{master_base_url}?token={token}&expires={expires}&h=1&scz=1&lang=it"
+        # 3. Master playlist URL: verifica supporto canPlayFHD ed evita 403
+        can_fhd = False
+        try:
+            parsed_embed = urllib.parse.urlparse(embed_url)
+            embed_qs = urllib.parse.parse_qs(parsed_embed.query)
+            if "canPlayFHD" in embed_qs and embed_qs["canPlayFHD"][0] in ("1", "true"):
+                can_fhd = True
+        except Exception:
+            pass
+
+        master_params = [f"token={token}", f"expires={expires}", "scz=1", "lang=it"]
+        if can_fhd:
+            master_params.append("h=1")
+        master_playlist_url = f"{master_base_url}?{'&'.join(master_params)}"
 
         r_master = self.session.get(
             master_playlist_url,
             headers={"Referer": embed_url, "Origin": "https://vixcloud.co"},
             timeout=12
         )
+        # Fallback automatico se h=1 restituisce 403
+        if r_master.status_code == 403 and "h=1" in master_playlist_url:
+            fallback_url = master_playlist_url.replace("&h=1", "").replace("h=1&", "")
+            r_master = self.session.get(
+                fallback_url,
+                headers={"Referer": embed_url, "Origin": "https://vixcloud.co"},
+                timeout=12
+            )
+            if r_master.status_code == 200:
+                master_playlist_url = fallback_url
+
         if r_master.status_code != 200:
             raise ValueError(f"Master playlist non raggiungibile: status {r_master.status_code}")
 
@@ -247,7 +285,7 @@ class StreamingCommunityScraper:
                     audios.append({
                         "language": lang_match.group(1) if lang_match else "ita",
                         "name": name_match.group(1) if name_match else "Italian",
-                        "url": uri_match.group(1)
+                        "url": urllib.parse.urljoin(master_playlist_url, uri_match.group(1))
                     })
 
         # Parse subtitle tracks
@@ -261,7 +299,7 @@ class StreamingCommunityScraper:
                     subtitles.append({
                         "language": lang_match.group(1) if lang_match else "ita",
                         "name": name_match.group(1) if name_match else "Sub",
-                        "url": uri_match.group(1)
+                        "url": urllib.parse.urljoin(master_playlist_url, uri_match.group(1))
                     })
 
         # Parse video streams
@@ -283,7 +321,7 @@ class StreamingCommunityScraper:
                         "rendition": rendition,
                         "resolution": res_match.group(1) if res_match else "",
                         "bandwidth": int(bw_match.group(1)) if bw_match else 0,
-                        "url": vid_url
+                        "url": urllib.parse.urljoin(master_playlist_url, vid_url)
                     })
 
         # Sort videos by bandwidth descending (best first)

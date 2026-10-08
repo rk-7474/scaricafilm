@@ -13,14 +13,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application source code
 COPY src/ ./src/
 
-# Create media and configuration directories
-RUN mkdir -p /media /app/config
+# Create downloads and configuration directories
+RUN mkdir -p /downloads /media /app/config
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1 \
     PORT=8000 \
     HOST=0.0.0.0 \
-    MEDIA_FOLDER=/media \
+    MOVIES_FOLDER=/downloads/movies \
+    TV_FOLDER=/downloads/tv \
     CONFIG_PATH=/app/config/settings.json
 
 EXPOSE 8000

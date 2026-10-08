@@ -489,6 +489,29 @@ body {
     color: var(--text-muted);
 }
 
+.badge-status-waiting_network {
+    background-color: rgba(245, 158, 11, 0.2);
+    color: #f59e0b;
+    border: 1px solid rgba(245, 158, 11, 0.5);
+    animation: pulse 2s infinite ease-in-out;
+}
+
+.badge-speed {
+    background-color: rgba(6, 182, 212, 0.15);
+    color: #06b6d4;
+    border: 1px solid rgba(6, 182, 212, 0.35);
+    font-weight: 700;
+}
+
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.55;
+    }
+}
+
 .download-actions {
     display: flex;
     gap: 0.5rem;

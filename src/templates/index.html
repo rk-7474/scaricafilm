@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ScaricaFilm - StreamingCommunity Downloader</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v=2.3">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -117,10 +117,18 @@
                             <div id="testResult" class="test-status" style="display: none;"></div>
                         </div>
 
-                        <div class="form-group">
-                            <label for="downloadDir">Cartella Media Download</label>
-                            <input type="text" id="downloadDir" required value="{{ settings.download_dir }}">
-                            <small class="form-help">Percorso nel server/container in cui salvare i file (predefinito in Docker: <code>/media</code>). Per salvare direttamente in cartelle esterne (es. Jellyfin o Plex), mappa il volume in <code>docker-compose.yml</code> (es. <code>- ../jellyfin/media:/media</code>).</small>
+                        <div class="form-row">
+                            <div class="form-group half">
+                                <label for="moviesDir">📁 Cartella Film</label>
+                                <input type="text" id="moviesDir" required value="{{ settings.movies_dir }}">
+                                <small class="form-help">Percorso per i film. Puoi inserire un percorso Windows (es. <code>C:\Film</code>) o la cartella predefinita (<code>/downloads/movies</code>).</small>
+                            </div>
+
+                            <div class="form-group half">
+                                <label for="tvDir">📁 Cartella Serie TV</label>
+                                <input type="text" id="tvDir" required value="{{ settings.tv_dir }}">
+                                <small class="form-help">Percorso per le serie TV. Puoi inserire un percorso Windows (es. <code>C:\SerieTV</code>) o la cartella predefinita (<code>/downloads/tv</code>).</small>
+                            </div>
                         </div>
 
                         <div class="form-row">
@@ -218,6 +226,6 @@
     <!-- Toast Notifications -->
     <div id="toastContainer" class="toast-container"></div>
 
-    <script src="/static/js/app.js"></script>
+    <script src="/static/js/app.js?v=2.3"></script>
 </body>
 </html>

@@ -364,23 +364,10 @@ async function downloadWholeSeason(episodes) {
 // --- Downloads SSE & Real-time Monitor ---
 function setupDownloadsMonitor() {
     let evtSource = null;
+    let pollTimer = null;
+    let isSSEConnected = false;
 
-    function connectSSE() {
-        evtSource = new EventSource('/api/downloads/stream');
-        evtSource.onmessage = function(event) {
-            try {
-                const tasks = JSON.parse(event.data);
-                renderDownloads(tasks);
-            } catch (e) {}
-        };
-        evtSource.onerror = function() {
-            evtSource.close();
-            // Fallback to polling every 3 seconds
-            setTimeout(pollDownloads, 3000);
-        };
-    }
-
-    async function pollDownloads() {
+    async function fetchOnce() {
         try {
             const res = await fetch('/api/downloads');
             const data = await res.json();
@@ -388,14 +375,57 @@ function setupDownloadsMonitor() {
                 renderDownloads(data.tasks);
             }
         } catch (e) {}
-        setTimeout(pollDownloads, 2000);
     }
 
+    function startPollingFallback() {
+        if (pollTimer) return;
+        pollTimer = setInterval(async () => {
+            if (isSSEConnected) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+                return;
+            }
+            await fetchOnce();
+            if (!evtSource || evtSource.readyState === EventSource.CLOSED) {
+                connectSSE();
+            }
+        }, 3000);
+    }
+
+    function connectSSE() {
+        if (evtSource) {
+            try { evtSource.close(); } catch (e) {}
+        }
+        evtSource = new EventSource('/api/downloads/stream');
+
+        evtSource.onopen = function() {
+            isSSEConnected = true;
+            if (pollTimer) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+            }
+        };
+
+        evtSource.onmessage = function(event) {
+            try {
+                const tasks = JSON.parse(event.data);
+                renderDownloads(tasks);
+            } catch (e) {}
+        };
+
+        evtSource.onerror = function() {
+            isSSEConnected = false;
+            try { evtSource.close(); } catch (e) {}
+            startPollingFallback();
+        };
+    }
+
+    fetchOnce();
     connectSSE();
 }
 
 function renderDownloads(tasks) {
-    const activeTasks = tasks.filter(t => ['queued', 'resolving', 'downloading'].includes(t.status));
+    const activeTasks = tasks.filter(t => ['queued', 'resolving', 'downloading', 'waiting_network'].includes(t.status));
     const completedTasks = tasks.filter(t => ['completed', 'failed', 'cancelled'].includes(t.status));
 
     // Update navbar badge
@@ -440,6 +470,7 @@ function createDownloadItemElement(task, isActive) {
         queued: 'In coda',
         resolving: 'Ricerca flussi HLS',
         downloading: 'Download HLS in corso',
+        waiting_network: 'In attesa Wi-Fi 📶',
         completed: 'Completato',
         failed: 'Errore',
         cancelled: 'Annullato'
@@ -448,17 +479,21 @@ function createDownloadItemElement(task, isActive) {
     const statusLabel = statusMap[task.status] || task.status;
     const posterSrc = task.poster_url || 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="48" height="68"><rect fill="%231f2937" width="48" height="68"/></svg>';
 
+    const hasTotal = task.total_size && task.total_size !== '--';
+    const sizeDisplay = hasTotal ? `${task.downloaded_size} / ${task.total_size}` : task.downloaded_size;
+
     let progressHtml = '';
     if (isActive) {
+        const multDisplay = (task.speed_mult && task.speed_mult !== '0x' && task.speed_mult !== 'N/A') ? `(${escapeHtml(task.speed_mult)})` : '';
         progressHtml = `
             <div class="progress-container">
                 <div class="progress-track">
                     <div class="progress-fill" style="width: ${task.progress}%"></div>
                 </div>
                 <div class="progress-details">
-                    <span>${task.progress}% ${task.speed ? `(${task.speed})` : ''}</span>
-                    <span>ETA: ${task.eta}</span>
-                    <span>${task.downloaded_size}</span>
+                    <span>${task.progress}% ${multDisplay}</span>
+                    <span>Restanti: ${escapeHtml(task.eta)}</span>
+                    <span>${escapeHtml(sizeDisplay)}</span>
                 </div>
             </div>
         `;
@@ -467,7 +502,12 @@ function createDownloadItemElement(task, isActive) {
     let errorHtml = '';
     if (task.status === 'failed' && task.error_message) {
         errorHtml = `<div style="font-size:0.8rem;color:var(--danger);margin-top:0.25rem;">${escapeHtml(task.error_message)}</div>`;
+    } else if (task.status === 'waiting_network' && task.error_message) {
+        errorHtml = `<div style="font-size:0.8rem;color:var(--warning);margin-top:0.25rem;">📶 ${escapeHtml(task.error_message)}</div>`;
     }
+
+    const currentSpeed = task.download_speed || (task.speed && !task.speed.includes('(') ? task.speed : '');
+    const hasSpeed = isActive && currentSpeed && currentSpeed !== '0 B/s' && currentSpeed !== '0x';
 
     div.innerHTML = `
         <div class="download-main">
@@ -477,8 +517,9 @@ function createDownloadItemElement(task, isActive) {
                 <div class="download-meta">
                     <span class="badge badge-status-${task.status}">${statusLabel}</span>
                     <span class="badge badge-quality">${task.quality || 'HD'}</span>
-                    ${task.downloaded_size ? `<span>Dimensione: ${task.downloaded_size}</span>` : ''}
-                    ${task.file_path && !isActive ? `<span title="${escapeHtml(task.file_path)}" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📁 ${escapeHtml(task.file_path)}</span>` : ''}
+                    ${hasSpeed ? `<span class="badge badge-speed">⚡ ${escapeHtml(currentSpeed)}</span>` : ''}
+                    ${task.downloaded_size ? `<span>Dimensione: ${escapeHtml(sizeDisplay)}</span>` : ''}
+                    ${task.file_path && !isActive ? `<span title="${escapeHtml(formatPathForDisplay(task.file_path))}" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📁 ${escapeHtml(formatPathForDisplay(task.file_path))}</span>` : ''}
                 </div>
                 ${errorHtml}
             </div>
@@ -488,6 +529,11 @@ function createDownloadItemElement(task, isActive) {
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                     </button>
                 ` : `
+                    ${(task.status === 'failed' || task.status === 'cancelled') ? `
+                        <button class="btn-icon" title="Riprova download" onclick="retryDownload('${task.id}')">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                        </button>
+                    ` : ''}
                     <button class="btn-icon" title="Rimuovi da cronologia" onclick="deleteDownload('${task.id}', false)">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                     </button>
@@ -508,6 +554,16 @@ async function cancelDownload(taskId) {
     } catch (e) {}
 }
 
+async function retryDownload(taskId) {
+    try {
+        const res = await fetch(`/api/downloads/${taskId}/retry`, { method: 'POST' });
+        const data = await res.json();
+        if (data.ok) showToast('Download rimesso in coda', 'success');
+    } catch (e) {
+        showToast('Errore durante il riavvio del download', 'error');
+    }
+}
+
 async function deleteDownload(taskId, deleteFile) {
     try {
         const res = await fetch(`/api/downloads/${taskId}?delete_file=${deleteFile}`, { method: 'DELETE' });
@@ -521,7 +577,8 @@ settingsForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const payload = {
         streamingcommunity_url: document.getElementById('streamingUrl').value.trim(),
-        download_dir: document.getElementById('downloadDir').value.trim(),
+        movies_dir: document.getElementById('moviesDir').value.trim(),
+        tv_dir: document.getElementById('tvDir').value.trim(),
         preferred_quality: document.getElementById('preferredQuality').value,
         preferred_audio: document.getElementById('preferredAudio').value,
     };
@@ -589,6 +646,18 @@ function escapeHtml(str) {
 function escapeQuotes(str) {
     if (!str) return '';
     return str.replace(/'/g, "\\'");
+}
+
+function formatPathForDisplay(filePath) {
+    if (!filePath) return '';
+    if (filePath.startsWith('/host_c/')) {
+        return 'C:\\' + filePath.slice(8).replace(/\//g, '\\');
+    }
+    const match = filePath.match(/^\/host_([a-zA-Z])\/(.*)$/);
+    if (match) {
+        return match[1].toUpperCase() + ':\\' + match[2].replace(/\//g, '\\');
+    }
+    return filePath;
 }
 
 // Initialize

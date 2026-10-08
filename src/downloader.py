@@ -7,7 +7,7 @@ import shutil
 import asyncio
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from src.config import settings_manager
+from src.config import settings_manager, format_display_path
 from src.scraper import scraper
 
 def sanitize_filename(name: str) -> str:
@@ -42,7 +42,6 @@ def find_ffmpeg() -> str:
     if path:
         return path
     for fallback in [
-        "/home/giulio/.local/bin/ffmpeg",
         "/usr/local/bin/ffmpeg",
         "/usr/bin/ffmpeg",
         "/bin/ffmpeg"
@@ -79,11 +78,14 @@ class DownloadTask:
         self.audio_lang = audio_lang or settings_manager.get("preferred_audio", "ita")
         self.poster_url = poster_url
 
-        self.status = "queued"  # queued, resolving, downloading, completed, failed, cancelled
+        self.status = "queued"  # queued, resolving, downloading, waiting_network, completed, failed, cancelled
         self.progress = 0.0
-        self.speed = "0x"
+        self.speed = "0 B/s"
+        self.speed_mult = "0x"
+        self.download_speed = "0 B/s"
         self.eta = "--"
         self.downloaded_size = "0 B"
+        self.total_size = "--"
         self.total_duration = 0.0
         self.file_path = ""
         self.error_message = ""
@@ -120,9 +122,12 @@ class DownloadTask:
             "status": self.status,
             "progress": round(self.progress, 1),
             "speed": self.speed,
+            "speed_mult": self.speed_mult,
+            "download_speed": self.download_speed,
             "eta": self.eta,
             "downloaded_size": self.downloaded_size,
-            "file_path": self.file_path,
+            "total_size": self.total_size,
+            "file_path": format_display_path(self.file_path),
             "error_message": self.error_message,
             "created_at": self.created_at,
             "started_at": self.started_at,
@@ -135,9 +140,50 @@ class DownloadManager:
         self.history_file = Path(history_file)
         self.queue: asyncio.Queue = asyncio.Queue()
         self._worker_task: Optional[asyncio.Task] = None
-        self._lock = asyncio.Lock()
-        self._active_count = 0
+        self._watcher_task: Optional[asyncio.Task] = None
+        self._semaphore: Optional[asyncio.Semaphore] = None
+        self._semaphore_limit: int = 0
         self.load_history()
+
+    def _is_online(self) -> bool:
+        import socket
+        test_targets = [("1.1.1.1", 53), ("8.8.8.8", 53), ("1.1.1.1", 80)]
+        for host, port in test_targets:
+            try:
+                s = socket.create_connection((host, port), timeout=3)
+                s.close()
+                return True
+            except Exception:
+                pass
+        return False
+
+    async def _network_watcher_loop(self):
+        while True:
+            try:
+                await asyncio.sleep(5)
+                waiting_tasks = [t for t in self.tasks.values() if t.status == "waiting_network"]
+                if waiting_tasks:
+                    loop = asyncio.get_running_loop()
+                    online = await loop.run_in_executor(None, self._is_online)
+                    if online:
+                        print(f"[DownloadManager] Rete ripristinata! Ripresa automatica di {len(waiting_tasks)} task.")
+                        for task in waiting_tasks:
+                            task.status = "queued"
+                            task.error_message = ""
+                            task.eta = "--"
+                            await self.queue.put(task.id)
+                        self.save_history()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"[DownloadManager] Errore nel network watcher: {e}")
+
+    def _get_semaphore(self) -> asyncio.Semaphore:
+        limit = max(1, int(settings_manager.get("max_concurrent_downloads", 2)))
+        if self._semaphore is None or self._semaphore_limit != limit:
+            self._semaphore = asyncio.Semaphore(limit)
+            self._semaphore_limit = limit
+        return self._semaphore
 
     def load_history(self):
         try:
@@ -166,6 +212,10 @@ class DownloadManager:
                         t.progress = item.get("progress", 100.0 if t.status == "completed" else 0.0)
                         t.file_path = item.get("file_path", "")
                         t.downloaded_size = item.get("downloaded_size", "")
+                        t.total_size = item.get("total_size", t.downloaded_size if t.status == "completed" and t.downloaded_size else "--")
+                        t.download_speed = item.get("download_speed", "0 B/s")
+                        t.speed_mult = item.get("speed_mult", "0x")
+                        t.speed = item.get("speed", "0 B/s")
                         t.created_at = item.get("created_at", time.time())
                         t.completed_at = item.get("completed_at")
                         self.tasks[t.id] = t
@@ -176,14 +226,18 @@ class DownloadManager:
         try:
             self.history_file.parent.mkdir(parents=True, exist_ok=True)
             data = [t.to_dict() for t in self.tasks.values()]
-            with open(self.history_file, "w", encoding="utf-8") as f:
+            tmp_file = self.history_file.with_suffix(".tmp")
+            with open(tmp_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
+            os.replace(tmp_file, self.history_file)
         except Exception as e:
             print(f"[DownloadManager] Error saving history: {e}")
 
     def start_worker(self):
         if self._worker_task is None or self._worker_task.done():
             self._worker_task = asyncio.create_task(self._process_queue())
+        if self._watcher_task is None or self._watcher_task.done():
+            self._watcher_task = asyncio.create_task(self._network_watcher_loop())
 
     async def add_task(self, task: DownloadTask) -> str:
         self.tasks[task.id] = task
@@ -192,7 +246,7 @@ class DownloadManager:
         self.start_worker()
         return task.id
 
-    def cancel_task(self, task_id: str) -> bool:
+    async def cancel_task(self, task_id: str) -> bool:
         task = self.tasks.get(task_id)
         if not task:
             return False
@@ -200,9 +254,18 @@ class DownloadManager:
             return False
 
         task.status = "cancelled"
+        task.speed = "0 B/s"
+        task.speed_mult = "0x"
+        task.download_speed = "0 B/s"
+        task.eta = "--"
         if task._process:
             try:
                 task._process.terminate()
+                try:
+                    await asyncio.wait_for(task._process.wait(), timeout=3.0)
+                except asyncio.TimeoutError:
+                    task._process.kill()
+                    await task._process.wait()
             except Exception:
                 pass
 
@@ -215,13 +278,13 @@ class DownloadManager:
         self.save_history()
         return True
 
-    def delete_task(self, task_id: str, delete_file: bool = False) -> bool:
+    async def delete_task(self, task_id: str, delete_file: bool = False) -> bool:
         task = self.tasks.get(task_id)
         if not task:
             return False
 
-        if task.status in ("downloading", "resolving"):
-            self.cancel_task(task_id)
+        if task.status in ("downloading", "resolving", "waiting_network"):
+            await self.cancel_task(task_id)
 
         if delete_file and task.file_path:
             p = Path(task.file_path)
@@ -233,6 +296,26 @@ class DownloadManager:
 
         self.tasks.pop(task_id, None)
         self.save_history()
+        return True
+
+    async def retry_task(self, task_id: str) -> bool:
+        task = self.tasks.get(task_id)
+        if not task:
+            return False
+        if task.status in ("downloading", "resolving", "queued"):
+            return False
+        task.status = "queued"
+        task.progress = 0.0
+        task.downloaded_size = "0 B"
+        task.total_size = "--"
+        task.download_speed = "0 B/s"
+        task.speed_mult = "0x"
+        task.eta = "--"
+        task.speed = "0 B/s"
+        task.error_message = ""
+        self.save_history()
+        await self.queue.put(task.id)
+        self.start_worker()
         return True
 
     def get_task(self, task_id: str) -> Optional[DownloadTask]:
@@ -248,8 +331,16 @@ class DownloadManager:
             task_id = await self.queue.get()
             task = self.tasks.get(task_id)
             if task and task.status == "queued":
-                asyncio.create_task(self._execute_download(task))
+                sem = self._get_semaphore()
+                await sem.acquire()
+                asyncio.create_task(self._run_with_semaphore(task, sem))
             self.queue.task_done()
+
+    async def _run_with_semaphore(self, task: DownloadTask, sem: asyncio.Semaphore):
+        try:
+            await self._execute_download(task)
+        finally:
+            sem.release()
 
     async def _execute_download(self, task: DownloadTask):
         task.status = "resolving"
@@ -257,7 +348,6 @@ class DownloadManager:
         self.save_history()
 
         ffmpeg_bin = find_ffmpeg()
-        media_root = settings_manager.get_media_dir()
 
         try:
             # 1. Resolve stream sources
@@ -306,25 +396,34 @@ class DownloadManager:
             try:
                 def get_duration():
                     r = scraper.session.get(video_url, headers={"Referer": embed_url}, timeout=10)
-                    matches = re.findall(r'#EXTINF:([\d\.]+),', r.text)
+                    matches = re.findall(r'#EXTINF:([\d\.]+)', r.text)
                     return sum(float(x) for x in matches)
                 task.total_duration = await loop.run_in_executor(None, get_duration)
             except Exception as e:
                 print(f"[DownloadManager] Could not compute total duration: {e}")
                 task.total_duration = 0.0
 
+            # Calculate estimated total size upfront
+            video_bandwidth = selected_video.get("bandwidth", 0)
+            total_bps = video_bandwidth + 160_000
+            if total_bps > 160_000 and task.total_duration > 0:
+                estimated_bytes = int((total_bps * task.total_duration) / 8)
+                task.total_size = f"~{format_bytes(estimated_bytes)}"
+
             # 2. Build destination file path
             clean_title = sanitize_filename(task.title_name)
             year_tag = f" ({task.year})" if task.year else ""
 
             if task.media_type == "tv" and task.season_number is not None and task.episode_number is not None:
-                series_dir = media_root / "TV" / f"{clean_title}{year_tag}" / f"Season {task.season_number:02d}"
+                series_root = settings_manager.get_tv_dir()
+                series_dir = series_root / f"{clean_title}{year_tag}" / f"Season {task.season_number:02d}"
                 clean_ep_name = sanitize_filename(task.episode_name or "")
                 ep_suffix = f" - {clean_ep_name}" if clean_ep_name else ""
                 filename = f"{clean_title} - S{task.season_number:02d}E{task.episode_number:02d}{ep_suffix} [{actual_quality}].mp4"
                 final_path = series_dir / filename
             else:
-                movie_dir = media_root / "Movies" / f"{clean_title}{year_tag}"
+                movie_root = settings_manager.get_movies_dir()
+                movie_dir = movie_root / f"{clean_title}{year_tag}"
                 filename = f"{clean_title}{year_tag} [{actual_quality}].mp4"
                 final_path = movie_dir / filename
 
@@ -341,12 +440,30 @@ class DownloadManager:
             task.status = "downloading"
             self.save_history()
 
-            # 3. Launch ffmpeg process
+            # 3. Launch ffmpeg process with network resilience and performance options
+            reconnect_flags = [
+                "-rw_timeout", "15000000",
+                "-seg_max_retry", "30",
+                "-max_reload", "30",
+                "-reconnect", "1",
+                "-reconnect_streamed", "1",
+                "-reconnect_on_network_error", "1",
+                "-reconnect_on_http_error", "4xx,5xx",
+                "-reconnect_delay_max", "30",
+                "-reconnect_max_retries", "-1",
+                "-reconnect_delay_total_max", "1800",
+                "-http_persistent", "1",
+                "-http_multiple", "1",
+            ]
+
             ffmpeg_cmd = [
                 ffmpeg_bin,
                 "-y",
+                "-loglevel", "warning",
+                *reconnect_flags,
                 "-headers", f"Referer: {embed_url}\r\n",
                 "-i", video_url,
+                *reconnect_flags,
                 "-headers", f"Referer: {embed_url}\r\n",
                 "-i", audio_url,
                 "-c", "copy",
@@ -365,8 +482,32 @@ class DownloadManager:
             )
             task._process = proc
 
+            # Continuously drain stderr in the background to prevent OS pipe buffer deadlocks
+            stderr_lines: List[str] = []
+            async def drain_stderr():
+                try:
+                    while True:
+                        err_line = await proc.stderr.readline()
+                        if not err_line:
+                            break
+                        decoded = err_line.decode("utf-8", errors="replace").strip()
+                        if decoded:
+                            stderr_lines.append(decoded)
+                            if len(stderr_lines) > 50:
+                                stderr_lines.pop(0)
+                except Exception:
+                    pass
+
+            stderr_task = asyncio.create_task(drain_stderr())
+
             # Read stdout line by line for progress
             last_save = time.time()
+            last_sample_time = time.time()
+            last_sample_bytes = 0
+            last_progress_time = time.time()
+            raw_speed_mult = "1.0x"
+            current_sec = 0.0
+
             while True:
                 line = await proc.stdout.readline()
                 if not line:
@@ -385,36 +526,67 @@ class DownloadManager:
                             task.progress = min(99.5, (current_sec / task.total_duration) * 100.0)
                             # ETA
                             try:
-                                speed_val = float(task.speed.replace("x", "")) if task.speed and task.speed != "0x" else 1.0
+                                raw_speed = raw_speed_mult.replace("x", "").strip() if raw_speed_mult else ""
+                                speed_val = float(raw_speed) if raw_speed and raw_speed != "N/A" else 1.0
                                 if speed_val > 0.01:
                                     remaining_sec = max(0, (task.total_duration - current_sec) / speed_val)
                                     task.eta = format_time(remaining_sec)
-                            except Exception:
+                            except (ValueError, TypeError, ZeroDivisionError):
                                 pass
 
                     elif k == "speed":
-                        task.speed = v
+                        raw_speed_mult = v
+                        task.speed_mult = raw_speed_mult
 
                     elif k == "total_size":
                         if v.isdigit():
-                            task.downloaded_size = format_bytes(int(v))
+                            current_bytes = int(v)
+                            task.downloaded_size = format_bytes(current_bytes)
+                            now = time.time()
+                            dt = now - last_sample_time
+                            if dt >= 1.0:
+                                if current_bytes > last_sample_bytes:
+                                    bytes_per_sec = (current_bytes - last_sample_bytes) / dt
+                                    speed_str = f"{format_bytes(int(bytes_per_sec))}/s"
+                                    task.download_speed = speed_str
+                                    task.speed = speed_str
+                                    last_progress_time = now
+                                last_sample_time = now
+                                last_sample_bytes = current_bytes
 
                     elif k == "progress" and v == "end":
-                        task.progress = 100.0
+                        if task.total_duration <= 0 or current_sec >= (task.total_duration - 15) or task.progress >= 99.0:
+                            task.progress = 100.0
 
-                if time.time() - last_save > 2.0:
-                    last_save = time.time()
+                now = time.time()
+                # Check for network stall or Wi-Fi drop during streaming
+                if now - last_progress_time > 10.0 and task.status == "downloading":
+                    task.download_speed = "0 B/s"
+                    task.speed = "0 B/s"
+                    task.speed_mult = "0x"
+                    task.eta = "In attesa connessione..."
+
+                if now - last_save > 2.0:
+                    last_save = now
                     self.save_history()
 
-            stderr_output = await proc.stderr.read()
+            await stderr_task
             return_code = await proc.wait()
+            stderr_output = "\n".join(stderr_lines)
 
             if task.status == "cancelled":
                 if part_path.exists():
                     part_path.unlink()
                 return
 
-            if return_code == 0:
+            # Check if download is truly complete (at least 99% or within 15 seconds of total_duration)
+            is_duration_complete = (
+                task.total_duration <= 0 or
+                task.progress >= 99.0 or
+                current_sec >= (task.total_duration - 15)
+            )
+
+            if return_code == 0 and is_duration_complete:
                 if part_path.exists():
                     if final_path.exists():
                         final_path.unlink()
@@ -424,16 +596,41 @@ class DownloadManager:
                     except Exception:
                         pass
                     task.downloaded_size = format_bytes(final_path.stat().st_size)
+                    task.total_size = task.downloaded_size
 
                 task.status = "completed"
                 task.progress = 100.0
+                task.speed = "0 B/s"
+                task.speed_mult = "0x"
+                task.download_speed = "0 B/s"
                 task.eta = "Fatto"
                 task.completed_at = time.time()
             else:
-                task.status = "failed"
-                task.error_message = stderr_output.decode("utf-8", errors="replace")[-300:] or f"FFmpeg terminato con codice {return_code}"
-                if part_path.exists():
-                    part_path.unlink()
+                loop = asyncio.get_running_loop()
+                is_online = await loop.run_in_executor(None, self._is_online)
+                is_network_err = (
+                    not is_online or
+                    not is_duration_complete or
+                    any(err_kw in stderr_output.lower() for err_kw in [
+                        "network is unreachable", "connection timed out", "connection reset",
+                        "connection refused", "temporary failure in name resolution", "name or service not known",
+                        "no route to host", "timed out", "handshake failed", "tls error", "403 forbidden",
+                        "server returned 5", "server returned 4"
+                    ])
+                )
+                if is_network_err:
+                    task.status = "waiting_network"
+                    task.error_message = f"Download interrotto prima del termine ({current_sec:.0f}s / {task.total_duration:.0f}s). In attesa del Wi-Fi..."
+                    task.speed = "0 B/s"
+                    task.speed_mult = "0x"
+                    task.download_speed = "0 B/s"
+                    task.eta = "In attesa connessione..."
+                    print(f"[DownloadManager] Task {task.id} interrotto prematuramente ({current_sec:.1f}s / {task.total_duration:.1f}s, exit code {return_code}). In attesa di ripresa...")
+                else:
+                    task.status = "failed"
+                    task.error_message = stderr_output[-300:] or f"FFmpeg terminato con codice {return_code}"
+                    if part_path.exists():
+                        part_path.unlink()
 
         except asyncio.CancelledError:
             task.status = "cancelled"
@@ -445,11 +642,26 @@ class DownloadManager:
             if task._part_file and task._part_file.exists():
                 task._part_file.unlink()
         except Exception as e:
-            task.status = "failed"
-            task.error_message = str(e)
-            if task._part_file and task._part_file.exists():
-                task._part_file.unlink()
+            loop = asyncio.get_running_loop()
+            is_online = await loop.run_in_executor(None, self._is_online)
+            is_network_err = (
+                not is_online or
+                any(k in str(e).lower() for k in ["connection", "network", "timeout", "resolution", "offline"])
+            )
+            if is_network_err:
+                task.status = "waiting_network"
+                task.error_message = f"Connessione persa: {e}. In attesa del Wi-Fi..."
+                task.speed = "0 B/s (0x)"
+                task.download_speed = "0 B/s"
+                task.eta = "In attesa connessione..."
+            else:
+                task.status = "failed"
+                task.error_message = str(e)
+                if task._part_file and task._part_file.exists():
+                    task._part_file.unlink()
         finally:
+            if 'stderr_task' in locals() and not stderr_task.done():
+                stderr_task.cancel()
             task._process = None
             self.save_history()
 
